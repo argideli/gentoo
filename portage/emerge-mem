@@ -1,0 +1,65 @@
+#! /bin/bash
+
+free_thresh=4096 # Define free memmory threshold in MBs
+free_thresh=$(( $free_thresh * 1024 )) #KBs conversion
+
+emerge $@ &
+emerge_pid=$!
+echo "Emerge PID= $emerge_pid"
+echo "Free Memmory = $(awk '/^MemAvailable:/ { print $2; }' /proc/meminfo)"
+
+# trap ctrl-c and call ctrl_c()
+trap ctrl_c INT
+
+function ctrl_c() {
+        echo "** Trapped CTRL-C"
+        process_control "exit_2"
+        exit 2
+}
+
+
+#Sends SIGSTOP/SIGCONT/SIGTERM to emerge process tree
+function process_control() {
+        tree=`pstree -l -p $emerge_pid | grep -o '([0-9]\+)' | grep -o '[0-9]\+' | sort -u -r`
+        for p in $tree
+        do
+           if [[ $1 == 'exit_2' ]];then
+                echo "Sending signal 15 to  $p"
+                kill -18 $p #SIGCONT before SIGCTERM
+                kill -15 $p #SIGTERM
+           else
+                if ! $1; then
+                   echo "Suspending process $p"
+                   kill -19 $p
+                else
+                   echo "Resuming process $p"
+                   kill -18 $p
+                fi
+           fi
+        done
+}
+
+
+proc_stopped=false
+while [[ `ps -p $emerge_pid | wc -l` == 2 ]]
+do
+        free_mem=$(awk '/^MemAvailable:/ { print $2; }' /proc/meminfo)
+        if (( $free_mem < $free_thresh )); then
+                if ! $proc_stopped; then
+                        echo "DANGER DANGER!"
+                        echo "Free Memmory = $free_mem"
+                        echo "Stopping emerge PID=$emerge_pid process tree, free some memmory to continue!"
+                        process_control $proc_stopped
+                        proc_stopped=true
+                        sleep 2s
+                fi
+        else
+                if $proc_stopped; then
+                        echo "Free Memmory = $free_mem"
+                        echo "Resuming emerge PID=$emerge_pid process tree"
+                        sleep 2s
+                        process_control $proc_stopped
+                        proc_stopped=false
+                fi
+        fi
+done
